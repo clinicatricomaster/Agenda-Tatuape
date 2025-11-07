@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TricoMaster - Agenda Integrada</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'tm-gold': '#c5a365',
+                        'tm-gold-darker': '#b59355',
+                        'tm-bg-main': '#F3F4F6',
+                        'tm-text-primary': '#1F2937',
+                        'tm-text-secondary': '#6B7281',
+                        'verde-escuro': 'rgb(1, 52, 37)',
+                        'tm-primary': '#1e40af',
+                        'tm-secondary': '#374151',
+                        'tm-accent': '#c5a365'
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif']
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        :root {
+            --tm-gold: #c5a365;
+            --tm-gold-darker: #b59355;
+            --tm-bg-main: #F3F4F6;
+            --tm-text-primary: #1F2937;
+            --tm-text-secondary: #6B7281;
+        }
+        html, body { height: 100%; overflow: hidden; background-color: var(--tm-bg-main); }
+        body { font-family: 'Inter', sans-serif; color: var(--tm-text-primary); }
+        .agenda-wrapper { display: flex; flex-direction: column; height: 100%; overflow-y: scroll; }
+        .grid-container { display: grid; grid-template-columns: 80px 1fr 1fr 1fr 1fr 1fr; gap: 1px; }
+        .grid-cell { min-height: 65px; position: relative; }
+        .time-row:nth-child(even) .grid-cell-content { background-color: #f9fafb; }
+        .time-row:nth-child(odd) .grid-cell-content { background-color: #ffffff; }
+        .grid-cell.time-slot { background-color: #f3f4f6; font-weight: 600; display: flex; align-items: center; justify-content: center; }
+        .grid-cell-content { display: flex; flex-direction: column; justify-content: flex-start; gap: 1px; padding: 1px; height: 100%; }
+        .grid-cell-content:hover { background-color: #ecfeff !important; cursor: pointer; }
+        .appointment-card { border-radius: 0.25rem; overflow: hidden; width: 100%; border-width: 1px; position: relative; cursor: pointer; display: flex; flex-direction: column; justify-content: center; }
+        .appointment-card-full { height: 100%; flex-grow: 1; }
+        .appointment-card-half { min-height: 30px; flex-grow: 1; }
+        .observation-indicator { display: inline-flex; width: 16px; height: 16px; }
+        .placeholder-card { min-height: 30px; flex-grow: 1; display: flex; align-items: center; justify-content: center; border: 2px dashed #d1d5db; border-radius: 0.25rem; color: #9ca3af; transition: all 0.2s ease; }
+        .placeholder-card:hover { background-color: #e0f2fe; border-color: #0ea5e9; color: #0c4a6e; }
+        
+        /* Cores de Status */
+        .status-agendada { background-color: #FFFCBF; color: #1A0B00; border-color: #E6E3AD; }
+        .status-faltou { background-color: #FFBDBD; color: #3B0000; border-color: #E6AAAA; }
+        .status-aberta { background-color: #AFF5FA; color: #003B3B; border-color: #9BDDE1; }
+        .status-fechada { background-color: #EBEBEB; color: #000000; border-color: #D4D4D4; }
+        
+        /* Cores de Status 'Confirmada' - Agenda Médica */
+        .medico-confirmada-consulta { background-color: #DCFFD9; color: #0C4000; border-color: #C5E6C2; }
+        .medico-confirmada-nova-consulta { background-color: #DCFFD9; color: #0C4000; border-color: #C5E6C2; }
+        .medico-confirmada-retorno { background-color: #D9FFE9; color: #0C4000; border-color: #C2E6D1; }
+        .medico-confirmada-reavaliacao { background-color: #C6FFC2; color: #0C4000; border-color: #B0E6AD; }
+        
+        /* Cores de Status 'Confirmada' - Agenda Profissionais */
+        .profissional-confirmada { background-color: #E5C4FF; color: #040038; border-color: #CDAEE6; }
+
+        .btn { padding: 0.5rem 1.5rem; border-radius: 0.375rem; font-weight: 600; transition: background-color 0.2s; white-space: nowrap; }
+        .btn:disabled { background-color: #D1D5DB; cursor: not-allowed; }
+        .btn-primary { background-color: var(--tm-gold); color: white; }
+        .btn-primary:hover:not(:disabled) { background-color: var(--tm-gold-darker); }
+        .btn-secondary { background-color: #E5E7EB; color: var(--tm-text-primary); }
+        .btn-secondary:hover { background-color: #D1D5DB; }
+        .form-label { display: block; font-size: 0.875rem; font-weight: 500; color: var(--tm-text-secondary); margin-bottom: 0.25rem; }
+        .form-input { width: 100%; padding: 0.75rem; border: 1px solid #D1D5DB; border-radius: 0.375rem; background-color: white; transition: all 0.2s; }
+        .form-input:focus { outline: none; border-color: var(--tm-gold); box-shadow: 0 0 0 2px rgba(197, 163, 101, 0.3); }
+        .form-input:disabled { background-color: #F3F4F6; color: #9CA3AF; cursor: not-allowed; }
+        .tag { display: inline-flex; align-items: center; padding: 0.25rem 0.75rem; border-radius: 1rem; font-size: 0.75rem; font-weight: 600; margin: 0.125rem; border: none; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .modal-tag { cursor: pointer; transition: all 0.2s ease-in-out; }
+        .modal-tag.selected-tag { background-color: var(--tm-gold) !important; color: white !important; box-shadow: 0 0 0 2px var(--tm-gold-darker); transform: scale(1.05); }
+        .invisible-scrollbar::-webkit-scrollbar { display: none; }
+        .invisible-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .fade-in { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+        .notification-success { background-color: #10B981; color: white; }
+        .notification-error { background-color: #EF4444; color: white; }
+        .notification-warning { background-color: #F59E0B; color: white; }
+        .notification-info { background-color: #3B82F6; color: white; }
+        @media (max-width: 768px) { .grid-container { grid-template-columns: 60px 1fr 1fr; } .agenda-wrapper { font-size: 0.875rem; } }
+        @media screen { #report-printable-area { display: none; } }
+        @media print { body * { visibility: hidden; } #report-printable-area, #report-printable-area * { visibility: visible; } #report-printable-area { position: absolute; left: 0; top: 0; width: 100%; padding: 1cm; } .print-table { width: 100%; border-collapse: collapse; font-size: 9pt; } .print-table th, .print-table td { border: 1px solid #ccc; padding: 4px; text-align: left; } .print-table th { background-color: #f2f2f2; } .print-header-info { text-align: center; margin-bottom: 20px; } .print-header-info h1 { font-size: 14pt; margin: 0; } .print-header-info p { font-size: 10pt; margin: 2px 0; } }
+        .dashboard-card { background: white; border-radius: 0.5rem; padding: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border: 1px solid #e5e7eb; }
+        .stat-card { background: linear-gradient(135deg, #c5a365 0%, #b59355 100%); color: white; border-radius: 0.5rem; padding: 1.5rem; text-align: center; }
+        .stat-card-enfermagem { background: linear-gradient(135deg, #013425 0%, #025c3f 100%); color: white; border-radius: 0.5rem; padding: 1.5rem; text-align: center; }
+        .stat-number { font-size: 2rem; font-weight: bold; margin-bottom: 0.5rem; }
+        .stat-label { font-size: 0.875rem; opacity: 0.9; }
+        .table-responsive { overflow-x: auto; }
+        .data-table { width: 100%; border-collapse: collapse; }
+        .data-table th, .data-table td { padding: 0.75rem; border: 1px solid #e5e7eb; text-align: left; white-space: nowrap; }
+        .data-table th { background-color: #f9fafb; font-weight: 600; }
+        .data-table tr:nth-child(even) { background-color: #f9fafb; }
+        .data-table.report-view { font-size: 0.8rem; }
+        .accordion-content { max-height: 0; overflow: hidden; transition: max-height 0.3s ease-out, padding 0.3s ease-out; padding-top: 0; padding-bottom: 0; }
+        .accordion-content.open { max-height: 500px; padding-top: 1rem; padding-bottom: 1rem; }
+        .accordion-arrow { transition: transform 0.3s ease-out; }
+        .accordion-arrow.open { transform: rotate(180deg); }
+        /* Estilo personalizado para o seletor de unidade */
+        .unit-select {
+            -webkit-appearance: none; -moz-appearance: none; appearance: none;
+            background-image: url("data:image/svg+xml;utf8,<svg fill='%23c5a365' height='24' viewBox='0 0 24 24' width='24' xmlns='http://www.w3.org/2000/svg'><path d='M7 10l5 5 5-5z'/><path d='M0 0h24v24H0z' fill='none'/></svg>");
+            background-repeat: no-repeat; background-position-x: 100%; background-position-y: 50%;
+            padding-right: 2rem;
+        }
+    </style>
+</head>
+<body class="p-8">
+    <div id="global-notification" class="fixed top-4 right-4 p-4 rounded-lg shadow-lg z-50 hidden fade-in"></div>
+    <div id="login-container" class="w-full h-full flex items-center justify-center">
+        <div class="w-full max-w-md bg-white p-8 rounded-xl shadow-lg">
+            <h2 class="text-2xl font-bold text-center text-gray-800 mb-6">Login - TricoMaster Agenda</h2>
+            <form id="login-form" class="space-y-4">
+                <div><label for="email" class="form-label">Email</label><input type="email" id="email" class="form-input" required></div>
+                <div><label for="password" class="form-label">Senha</label><div class="relative"><input type="password" id="password" class="form-input pr-10" required><button type="button" id="toggle-password" class="absolute inset-y-0 right-0 pr-3 flex items-center"><svg class="h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg></button></div></div>
+                <p id="login-error" class="text-sm text-red-600 hidden"></p>
+                <button type="submit" class="btn btn-primary w-full !py-3">Entrar</button>
+            </form>
+            <p class="text-xs text-center text-gray-400 mt-4">Para criar um usuário, utilize o painel do Firebase.</p>
+        </div>
+    </div>
+        
+    <div id="app-container" class="h-full hidden">
+        <div class="max-w-screen-2xl mx-auto bg-white rounded-lg shadow-lg agenda-wrapper invisible-scrollbar">
+            <div class="sticky top-0 z-10 bg-white">
+                <div class="px-6 pt-6 pb-4">
+                    <div class="flex flex-col md:flex-row justify-between items-center gap-4">
+                        <div class="flex items-center gap-4">
+                            <input type="date" id="date-picker" class="p-2 border-2 border-gray-300 rounded-lg text-lg font-semibold text-gray-700 cursor-pointer flex-shrink-0">
+                            <h1 id="current-date-display" class="text-xl md:text-2xl font-semibold text-gray-800"></h1>
+                        </div>
+                        <div class="flex items-center gap-2 flex-wrap justify-center">
+                            <select id="unit-select" onchange="window.changeUnit(this.value)" class="unit-select font-semibold mr-4 text-lg bg-transparent cursor-pointer outline-none border-none focus:ring-0" style="color: var(--tm-gold);">
+                                <option value="Tatuape">Unidade Tatuapé</option>
+                                <option value="Santana">Unidade Santana</option>
+                            </select>
+                            <button onclick="window.openObservationsModal()" title="Observações" class="btn btn-primary p-3"><svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.5L15.232 5.232z"/></svg></button>
+                            <button onclick="window.openReportsModal()" title="Relatórios" class="btn btn-primary p-3"><svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 12h4v4"/><path d="M11 7h4v4"/><path d="M15 12h4v4"/></svg></button>
+                            <button onclick="window.openDashboardModal()" title="Dashboard" class="btn btn-primary p-3"><svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" /></svg></button>
+                            <button onclick="window.openCadastrosWithPassword()" title="Cadastros" class="btn btn-primary p-3 mr-4"><svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h12A2.25 2.25 0 0120.25 6v2.25c0 1.242-.998 2.25-2.25 2.25H6A2.25 2.25 0 013.75 8.25V6zM3.75 12A2.25 2.25 0 016 9.75h12A2.25 2.25 0 0120.25 12v2.25c0 1.242-.998 2.25-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V12zm0 6A2.25 2.25 0 016 15.75h12a2.25 2.25 0 012.25 2.25v2.25c0 1.242-.998 2.25-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V18z" /></svg></button>
+                            <button onclick="window.backupData()" title="Backup (JSON)" class="btn btn-secondary !p-3"><svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg></button>
+                            <label for="restore-input" title="Restaurar (JSON)" class="btn btn-secondary !p-3 cursor-pointer"><svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" /></svg></label>
+                            <input type="file" id="restore-input" class="hidden" accept=".json" onchange="window.restoreData(event)">
+                            <button id="logout-button" class="btn btn-secondary ml-4">Sair</button>
+                        </div>
+                    </div>
+                </div>
+                <div id="agenda-header-titles" class="grid-container bg-gray-300"></div>
+            </div>
+            <div class="pb-6 flex-grow">
+                <div id="agenda-grid-content" class="grid-container bg-gray-300 rounded-lg"></div>
+                <div id="tags-summary" class="mt-6 p-4">
+                    <h3 class="text-lg font-bold mb-3 text-gray-800">Observações</h3>
+                    <div id="tags-container" class="flex flex-wrap gap-2 mb-2"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="modal-agendamento" class="fixed inset-0 bg-black bg-opacity-60 hidden flex items-center justify-center z-50 p-4"></div>
+    <div id="modal-cadastros" class="fixed inset-0 bg-black bg-opacity-60 hidden flex items-center justify-center z-50 p-4"></div>
+    <div id="modal-relatorios" class="fixed inset-0 bg-black bg-opacity-60 hidden flex items-center justify-center z-50 p-4"></div>
+    <div id="modal-lista-observacoes" class="fixed inset-0 bg-black bg-opacity-60 hidden flex items-center justify-center z-50 p-4"></div>
+    <div id="modal-dashboard" class="fixed inset-0 bg-black bg-opacity-60 hidden flex items-center justify-center z-50 p-4"></div>
+    <div id="modal-restore-confirm" class="fixed inset-0 bg-black bg-opacity-70 hidden flex items-center justify-center z-[51] p-4"></div>
+    <div id="modal-tags-config" class="fixed inset-0 bg-black bg-opacity-60 hidden flex items-center justify-center z-50 p-4"></div>
+    <div id="report-printable-area"></div>
+
+    <script src="app.js" type="module"></script>
+    
+    <script>
+        try {
+            const savedUnit = localStorage.getItem('tm_last_unit');
+            if (savedUnit && document.getElementById('unit-select')) {
+                document.getElementById('unit-select').value = savedUnit;
+            }
+        } catch (e) { console.log('Info: LocalStorage não disponível'); }
+    </script>
+</body>
+</html>

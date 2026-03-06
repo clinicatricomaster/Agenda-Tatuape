@@ -107,10 +107,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // --- REALTIME LISTENERS (COM FILTRO DE UNIDADE) ---
 function setupRealtimeListeners(uid) { 
-    // Limpa listeners anteriores (importante na troca de unidade)
     unsubscribeListeners.forEach(u=>u()); 
     unsubscribeListeners=[]; 
-    appointments = {}; // Limpa os agendamentos locais ao trocar de unidade
+    appointments = {};
 
     const c=['professionals','medications','procedures','patients','observations']; 
     c.forEach(coll=>{
@@ -126,39 +125,43 @@ function setupRealtimeListeners(uid) {
         }));
     });
 
-    // BUG FIX: Agendamentos antigos podem não ter campo 'unit'.
-    // Usamos DOIS listeners: um filtrando pela unidade atual, outro buscando
-    // agendamentos sem unidade (legados). Ambos alimentam o mesmo objeto local.
-    const apptRef = collection(db, 'appointments');
+    // Dois objetos separados para não se sobrescreverem
+    let apptsByUnit = {};
+    let apptsByLegacy = {};
 
-    // Listener 1: agendamentos COM unidade correta
-    const q1 = query(apptRef, where('unit', '==', currentUnit));
-    unsubscribeListeners.push(onSnapshot(q1, s => {
-        // Limpa apenas entradas desta unidade e recarrega
-        Object.keys(appointments).forEach(k => { if (appointments[k]._source === 'unit') delete appointments[k]; });
-        s.docs.forEach(d => { const a = {id: d.id, ...d.data(), _source: 'unit'}; if(a.status !== 'Excluído') appointments[d.id] = a; });
+    function mergeAndRender() {
+        appointments = { ...apptsByLegacy, ...apptsByUnit }; // unit tem prioridade sobre legacy
         renderAgendaContent();
+    }
+
+    // Listener 1: agendamentos com unit correta
+    const q1 = query(collection(db, 'appointments'), where('unit', '==', currentUnit));
+    unsubscribeListeners.push(onSnapshot(q1, s => {
+        apptsByUnit = {};
+        s.docs.forEach(d => {
+            const a = {id: d.id, ...d.data()};
+            if(a.status !== 'Excluído') apptsByUnit[d.id] = a;
+        });
+        mergeAndRender();
     }, e => console.error('Erro appointments (unit):', e)));
 
-    // Listener 2: agendamentos SEM campo 'unit' (legados/migração)
-    // Usamos where('unit', '==', null) não funciona no Firestore para campos ausentes,
-    // então buscamos todos e filtramos localmente apenas os sem unidade.
-    // Para evitar custo, limitamos a busca a documentos recentes ou sem unit.
-    // ATENÇÃO: depois que todos os docs tiverem 'unit', este listener retorna vazio.
-    const q2 = query(apptRef, where('unit', 'not-in', ['Tatuape', 'Santana']));
+    // Listener 2: agendamentos legados SEM campo unit
+    // not-in não funciona para campos ausentes, então buscamos sem filtro de unit
+    // e pegamos apenas os que não têm unit definido
+    const q2 = query(collection(db, 'appointments'), where('unit', 'not-in', ['Tatuape', 'Santana']));
     unsubscribeListeners.push(onSnapshot(q2, s => {
-        Object.keys(appointments).forEach(k => { if (appointments[k]._source === 'legacy') delete appointments[k]; });
+        apptsByLegacy = {};
         s.docs.forEach(d => { 
-            const a = {id: d.id, ...d.data(), _source: 'legacy'}; 
-            if(a.status !== 'Excluído') appointments[d.id] = a;
-            // Auto-migração: estampa a unidade padrão no documento legado
-            if (!d.data().unit) {
+            const a = {id: d.id, ...d.data()}; 
+            if(a.status !== 'Excluído') {
+                apptsByLegacy[d.id] = a;
+                // Auto-migração: estampa a unidade no documento legado
                 setDoc(doc(db, 'appointments', d.id), { unit: currentUnit }, { merge: true })
-                    .catch(err => console.warn('Migração de unit falhou:', err));
+                    .catch(err => console.warn('Migração unit falhou:', err));
             }
         });
-        renderAgendaContent();
-    }, e => console.warn('Aviso appointments (legados):', e)));
+        mergeAndRender();
+    }, e => console.warn('Listener legados:', e)));
 }
 function handleSnapshot(coll,s){
     switch(coll){
@@ -188,7 +191,7 @@ function renderAgendaHeader() {
     }); 
 }
 function renderAgendaContent() { const c = document.getElementById("agenda-grid-content"); if (!c) return; c.innerHTML = ""; if (!appointments || typeof appointments !== 'object') { c.innerHTML = '<div class="col-span-6 p-4 text-center text-gray-500">Carregando...</div>'; return; } const slots = generateTimeSlots(8, 19), date = getSelectedDate(); if (!date) { c.innerHTML = '<div class="col-span-6 p-4 text-center text-gray-500">Selecione data</div>'; return; } slots.forEach(t => { const r = document.createElement("div"); r.className = "contents time-row"; const tc = document.createElement("div"); tc.className = "grid-cell time-slot text-sm"; tc.textContent = t; r.appendChild(tc); COLUMN_TITLES.forEach(col => { r.appendChild(createColumnCell(col, t, date)); }); c.appendChild(r); }); }
-function generateTimeSlots(s, e) { const slots = []; for (let h = s; h <= e; h++) { slots.push(`${h.toString().padStart(2, "0")}:00`); if (h < e) { slots.push(`${h.toString().padStart(2, "0")}:30`); } } return slots; }
+function generateTimeSlots(s, e) { const slots = []; for (let h = s; h <= e; h++) { slots.push(`${h.toString().padStart(2, "0")}:00`); slots.push(`${h.toString().padStart(2, "0")}:30`); } return slots; }
 function updateDateDisplay() { const ds = getSelectedDate(); if (!ds) return; const d = new Date(ds + 'T03:00:00'), disp = document.getElementById('current-date-display'); if (disp) { disp.innerText = new Intl.DateTimeFormat('pt-BR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }).format(d); } }
 
 function createAppointmentCard(appt, sizeClass, baseTime) {
@@ -224,7 +227,52 @@ function createAppointmentCard(appt, sizeClass, baseTime) {
     return `<div onclick="event.stopPropagation(); openAppointmentModal('${appt.column}', '${baseTime}', '${appt.id}')" class="appointment-card appointment-card-${sizeClass} ${cardClass}">${content}</div>`;
 }
 function createPlaceholderCard(column, timeToBook, baseTime, profName = '') { return `<div class="placeholder-card" onclick="event.stopPropagation(); openAppointmentModal('${column}', '${baseTime}', null, '${profName}', 'Retorno Presencial', '${timeToBook}')"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg></div>`; }
-function createColumnCell(column, time, selectedDate) { const content = document.createElement("div"); content.className = "grid-cell-content"; const [hour, minuteStr] = time.split(':'); const minute = parseInt(minuteStr, 10); const firstSlotTime = `${hour}:${minute === 0 ? '00' : '30'}`, secondSlotTime = `${hour}:${minute === 0 ? '15' : '45'}`; const firstKey = `${selectedDate}-${column}-${firstSlotTime}`, secondKey = `${selectedDate}-${column}-${secondSlotTime}`; const firstAppt = appointments[firstKey], secondAppt = appointments[secondKey]; const isFirstApptFull = firstAppt && !RETURN_TYPES.includes(firstAppt.consultationType); if (isFirstApptFull) { content.innerHTML = createAppointmentCard(firstAppt, 'full', time); } else if (firstAppt && secondAppt) { content.innerHTML = createAppointmentCard(firstAppt, 'half', time); content.innerHTML += createAppointmentCard(secondAppt, 'half', time); } else if (firstAppt) { content.innerHTML = createAppointmentCard(firstAppt, 'half', time); content.innerHTML += createPlaceholderCard(column, secondSlotTime, time, firstAppt.professionalName); } else if (secondAppt) { content.innerHTML = createPlaceholderCard(column, firstSlotTime, time, secondAppt.professionalName); content.innerHTML += createAppointmentCard(secondAppt, 'half', time); } else { content.onclick = () => window.openAppointmentModal(column, time); } const cell = document.createElement("div"); cell.className = "grid-cell border-t border-l border-gray-200"; cell.appendChild(content); return cell; }
+function createColumnCell(column, time, selectedDate) {
+    const content = document.createElement("div");
+    content.className = "grid-cell-content";
+    const [hour, minuteStr] = time.split(':');
+    const minute = parseInt(minuteStr, 10);
+
+    // Cada slot visual de 30min (ex: 08:00) pode conter até 2 agendamentos:
+    // slot :00 → sub-horários :00 e :15
+    // slot :30 → sub-horários :30 e :45
+    const firstSlotTime  = `${hour}:${minute === 0 ? '00' : '30'}`;
+    const secondSlotTime = `${hour}:${minute === 0 ? '15' : '45'}`;
+
+    // BUG FIX: A chave no Firestore usa o horário EXATO do agendamento (ex: 08:00),
+    // mas a grade renderiza blocos de 30min. Precisamos buscar também pela chave
+    // do horário base completo (ex: 2024-01-01-Médico 1-08:00) para consultas normais
+    // que foram salvas com o horário do slot base (não sub-horário).
+    const baseKey    = `${selectedDate}-${column}-${time}`;        // ex: 08:00 ou 08:30
+    const firstKey   = `${selectedDate}-${column}-${firstSlotTime}`;  // igual ao base
+    const secondKey  = `${selectedDate}-${column}-${secondSlotTime}`; // :15 ou :45
+
+    // firstKey e baseKey são iguais — busca pela chave base cobre os dois casos
+    const firstAppt  = appointments[firstKey];
+    const secondAppt = appointments[secondKey];
+
+    const isFirstApptFull = firstAppt && !RETURN_TYPES.includes(firstAppt.consultationType);
+
+    if (isFirstApptFull) {
+        content.innerHTML = createAppointmentCard(firstAppt, 'full', time);
+    } else if (firstAppt && secondAppt) {
+        content.innerHTML  = createAppointmentCard(firstAppt, 'half', time);
+        content.innerHTML += createAppointmentCard(secondAppt, 'half', time);
+    } else if (firstAppt) {
+        content.innerHTML  = createAppointmentCard(firstAppt, 'half', time);
+        content.innerHTML += createPlaceholderCard(column, secondSlotTime, time, firstAppt.professionalName);
+    } else if (secondAppt) {
+        content.innerHTML  = createPlaceholderCard(column, firstSlotTime, time, secondAppt.professionalName);
+        content.innerHTML += createAppointmentCard(secondAppt, 'half', time);
+    } else {
+        content.onclick = () => window.openAppointmentModal(column, time);
+    }
+
+    const cell = document.createElement("div");
+    cell.className = "grid-cell border-t border-l border-gray-200";
+    cell.appendChild(content);
+    return cell;
+}
 
 // --- MODAL AGENDAMENTO ---
 window.openAppointmentModal = (col, time, id = null, profNameToPreload = '', typeToPreload = '', timeToBook = '') => { 

@@ -28,7 +28,7 @@ const CONSULTATION_DURATIONS = {
     'Consulta': 1.0, 'Nova Consulta': 1.0, 'Retorno Presencial': 0.5,
     'Retorno Online': 0.5, 'Reavaliação Final': 1.0, 'Reavaliação Meio': 0.5, '': 1.0
 };
-const UNIT_COLORS = { 'Tatuape': '#0D542B', 'Santana': '#149C07' };
+const UNIT_COLORS = { 'Tatuape': '#0D542B', 'Santana': '#1e40af' }; // Tatuapé=verde, Santana=azul
 const UNIT_NAMES  = { 'Tatuape': 'Unidade Tatuapé', 'Santana': 'Unidade Santana' };
 const AGENDA_START = 8;
 const AGENDA_END   = 19;
@@ -37,7 +37,11 @@ const AGENDA_END   = 19;
 let currentUser          = null;
 let unsubscribeListeners = [];
 let currentReportData    = [];
-let currentUnit          = localStorage.getItem('tm_last_unit') || 'Tatuape';
+// Unidade ativa — única fonte da verdade no JS.
+// Sempre atualizada por changeUnit() antes de qualquer operação.
+let currentUnit = localStorage.getItem('tm_last_unit') || 'Tatuape';
+// Valida o valor salvo — se inválido, usa padrão
+if (!UNIT_NAMES[currentUnit]) currentUnit = 'Tatuape';
 let availableTags        = ['Medicação', 'Reagendar', 'Agendar Próximo Mês', 'Financeiro / Nota', 'Geral'];
 let professionals        = { medicos: [], enfermagem: [] };
 let patients             = [];
@@ -70,7 +74,13 @@ function showNotification(type, message, duration = 5000) {
     if (duration > 0) setTimeout(() => { if (n.parentElement) n.remove(); }, duration);
 }
 
-const toTitleCase     = (str) => !str ? '' : str.replace(/\w\S*/g, t => t.charAt(0).toUpperCase() + t.substr(1).toLowerCase());
+const toTitleCase = (str) => {
+    if (!str) return '';
+    // Usa split por espaço para preservar acentos corretamente
+    return str.trim().split(/\s+/).map(word =>
+        word.length > 0 ? word.charAt(0).toUpperCase() + word.slice(1).toLowerCase() : ''
+    ).join(' ');
+};
 const getSelectedDate = () => document.getElementById('date-picker')?.value || '';
 const formatDateDDMMYY = (d) => { if (!d) return ''; const [y, m, dd] = d.split('-'); return `${dd}/${m}/${y.slice(-2)}`; };
 
@@ -99,10 +109,18 @@ function saveTagsConfig() {
 // ─── TROCA DE UNIDADE ─────────────────────────────────────────────────────────
 window.changeUnit = (newUnit) => {
     if (currentUnit === newUnit || !UNIT_NAMES[newUnit]) return;
+    // 1. Atualiza a variável JS — fonte da verdade
     currentUnit = newUnit;
     localStorage.setItem('tm_last_unit', newUnit);
+    // 2. Sincroniza o select visual
+    const sel = document.getElementById('unit-select');
+    if (sel) sel.value = newUnit;
+    // 3. Atualiza cor do cabeçalho imediatamente
     renderAgendaHeader();
-    renderAgendaContent(); // listener único já tem todos os dados — só re-filtra
+    // 4. Limpa agendamentos da unidade anterior e recarrega os da nova
+    appointments = {};
+    renderAgendaContent(); // mostra vazio enquanto carrega
+    setupRealtimeListeners(); // reinicia o listener com nova unidade
     showNotification('info', `Trocado para ${UNIT_NAMES[newUnit]}`);
 };
 
@@ -112,8 +130,12 @@ onAuthStateChanged(auth, user => {
         currentUser = user;
         document.getElementById('login-container').classList.add('hidden');
         document.getElementById('app-container').classList.remove('hidden');
+        // Sincroniza currentUnit com o select (que foi preenchido pelo script inline do HTML)
+        const sel = document.getElementById('unit-select');
+        if (sel && sel.value && UNIT_NAMES[sel.value]) currentUnit = sel.value;
         renderAgendaHeader();
-        setupRealtimeListeners();
+        renderAgenda();          // mostra data e header imediatamente
+        setupRealtimeListeners(); // carrega dados em tempo real
         loadTagsConfig();
     } else {
         currentUser  = null;
@@ -177,7 +199,11 @@ function setupRealtimeListeners() {
         );
     });
 
-    // Listener único de agendamentos — sem nenhum filtro no servidor
+    // Listener único de agendamentos — sem filtro no Firestore para evitar race conditions.
+    // Regra de filtro LOCAL por unidade:
+    //   - unit definida e igual à unidade atual  → MOSTRA
+    //   - unit definida e DIFERENTE               → ESCONDE (corrige cruzamento entre unidades)
+    //   - sem unit (legado)                       → migra para Tatuape e mostra só lá
     unsubscribeListeners.push(
         onSnapshot(
             collection(db, 'appointments'),
@@ -185,10 +211,22 @@ function setupRealtimeListeners() {
                 const novo = {};
                 snap.docs.forEach(d => {
                     const a = { id: d.id, ...d.data() };
+
+                    // Ignora excluídos
                     if (a.status === 'Excluído') return;
-                    // Agendamentos sem campo 'unit' (legados) são sempre mostrados
-                    if (a.unit && a.unit !== currentUnit) return;
-                    novo[d.id] = a;
+
+                    if (a.unit) {
+                        // Tem unidade definida: filtra estritamente
+                        if (a.unit === currentUnit) novo[d.id] = a;
+                    } else {
+                        // Documento legado sem campo 'unit': mostra em Tatuapé
+                        if (currentUnit === 'Tatuape') novo[d.id] = a;
+                        // Migra UMA VEZ — só se realmente não tiver o campo
+                        if (!d.data().hasOwnProperty('unit')) {
+                            setDoc(doc(db, 'appointments', d.id), { unit: 'Tatuape' }, { merge: true })
+                                .catch(err => console.warn('Migração unit falhou:', d.id, err));
+                        }
+                    }
                 });
                 appointments = novo;
                 renderAgendaContent();
@@ -238,7 +276,7 @@ function renderAgenda() {
 function renderAgendaHeader() {
     const c = document.getElementById('agenda-header-titles');
     if (!c) return;
-    const color = UNIT_COLORS[currentUnit];
+    const color = UNIT_COLORS[currentUnit] || UNIT_COLORS['Tatuape'];
     c.innerHTML = `<div class="grid-cell h-[50px] font-bold flex items-center justify-center p-2 text-center text-sm" style="background-color:${color};color:white;">Horário</div>`;
     COLUMN_TITLES.forEach(t =>
         c.insertAdjacentHTML('beforeend', `<div class="grid-cell h-[50px] font-bold flex items-center justify-center p-2 text-center text-sm" style="background-color:${color};color:white;">${t}</div>`)
@@ -347,7 +385,10 @@ function createAppointmentCard(appt, sizeClass, baseTime) {
         const line3 = `<div class="text-xs text-inherit opacity-80 flex items-center gap-2 truncate"><span>${items}</span>${obsIcon}</div>`;
         content = `<div class="flex-grow flex flex-col justify-center overflow-hidden p-2">${line1}${line2}${line3}</div>`;
     }
-    return `<div onclick="event.stopPropagation();window.openAppointmentModal('${appt.column}','${baseTime}','${appt.id}')" class="appointment-card appointment-card-${sizeClass} ${cardClass}">${content}</div>`;
+    // Escapa o id para prevenir quebra de HTML no onclick (ids podem ter caracteres especiais)
+    const safeId = appt.id.replace(/'/g, "\'");
+    const safeCol = (appt.column || '').replace(/'/g, "\'");
+    return `<div onclick="event.stopPropagation();window.openAppointmentModal('${safeCol}','${baseTime}','${safeId}')" class="appointment-card appointment-card-${sizeClass} ${cardClass}">${content}</div>`;
 }
 
 function createPlaceholderCard(column, subTime, baseTime, profName = '') {
@@ -418,7 +459,12 @@ window.openAppointmentModal = (col, slotTime, id = null, profNameToPreload = '',
       </form>
     </div>`;
 
-    document.getElementById('appointment-form').onsubmit  = saveAppointment;
+    document.getElementById('appointment-form').onsubmit  = async (e) => {
+        const btn = document.querySelector('#appointment-form button[type="submit"]');
+        if (btn) { btn.disabled = true; btn.textContent = 'Salvando...'; }
+        await saveAppointment(e);
+        if (btn) { btn.disabled = false; btn.textContent = 'Salvar'; }
+    };
     document.getElementById('delete-button').onclick      = deleteAppointment;
     document.getElementById('cancel-button').onclick      = () => closeModal('modal-agendamento');
     document.getElementById('unblock-button').onclick     = unblockSlots;
@@ -542,8 +588,18 @@ async function saveAppointment(e) {
     const procs  = Array.from(document.querySelectorAll('input[name="procedures"]:checked')).map(cb => cb.value);
     const pName  = toTitleCase(document.getElementById('patient-name').value.trim());
     const pPhone = document.getElementById('patient-phone').value.replace(/\D/g, '');
+
+    if (!pName) { showNotification('error', 'Nome do paciente é obrigatório.'); return; }
+
     const newKey = `${date}-${col}-${time}`;
     const oldKey = id || newKey;
+
+    // Usa currentUnit — sempre atualizado por changeUnit() antes do salvamento
+    const unitAtSave = currentUnit;
+    if (!unitAtSave || !UNIT_NAMES[unitAtSave]) {
+        showNotification('error', 'Unidade inválida. Recarregue a página.');
+        return;
+    }
 
     const data = {
         status, patientName: pName, patientPhone: pPhone,
@@ -551,7 +607,7 @@ async function saveAppointment(e) {
         consultationType: document.getElementById('appointment-consultation-type').value,
         medication:       document.getElementById('appointment-medication').value,
         procedures: procs, observation: document.getElementById('observation').value.trim(),
-        date, time, column: col, unit: currentUnit,
+        date, time, column: col, unit: unitAtSave,
         lastModifiedBy: currentUser.email, lastModifiedAt: serverTimestamp(),
     };
 
@@ -602,12 +658,13 @@ async function saveBlockedSlots(status) {
     const end = new Date(`${date}T${endTime}`);
     if (cur > end) { showNotification('error', 'Horário final deve ser igual ou após o inicial.'); return; }
 
+    const unitAtSave = currentUnit;
     const batch = writeBatch(db);
     let count = 0;
     while (cur <= end && count < 100) {
         const ts = `${String(cur.getHours()).padStart(2,'0')}:${String(cur.getMinutes()).padStart(2,'0')}`;
         batch.set(doc(db, 'appointments', `${date}-${col}-${ts}`), {
-            status, observation: obs, date, time: ts, column: col, unit: currentUnit,
+            status, observation: obs, date, time: ts, column: col, unit: unitAtSave,
             userId: currentUser.uid, createdBy: currentUser.email, createdAt: serverTimestamp(),
             lastModifiedBy: currentUser.email, lastModifiedAt: serverTimestamp(),
         });
@@ -629,12 +686,15 @@ async function unblockSlots() {
     const date      = getSelectedDate();
     let cur = new Date(`${date}T${startTime}`);
     const end = new Date(`${date}T${endTime}`);
+    if (cur > end) { showNotification('error', 'Horário final deve ser igual ou após o inicial.'); return; }
     const batch = writeBatch(db);
-    while (cur <= end) {
+    let safeCount = 0;
+    while (cur <= end && safeCount < 100) {
         const ts = `${String(cur.getHours()).padStart(2,'0')}:${String(cur.getMinutes()).padStart(2,'0')}`;
         const k  = `${date}-${col}-${ts}`;
         if (appointments[k] && ['Aberta','Fechada'].includes(appointments[k].status)) batch.delete(doc(db, 'appointments', k));
         cur.setMinutes(cur.getMinutes() + 15);
+        safeCount++;
     }
     try {
         await batch.commit();
@@ -644,8 +704,9 @@ async function unblockSlots() {
 }
 
 function deleteAppointment() {
-    const k = document.getElementById('appointment-id').value;
-    if (!k || !confirm('Tem certeza que deseja excluir este agendamento?')) return;
+    const k = document.getElementById('appointment-id').value?.trim();
+    if (!k) { showNotification('error', 'Erro: agendamento sem ID. Recarregue a página.'); return; }
+    if (!confirm('Tem certeza que deseja excluir este agendamento?')) return;
     setDoc(doc(db, 'appointments', k), {
         status: 'Excluído', deletedBy: currentUser.email, deletedAt: serverTimestamp(),
         lastModifiedBy: currentUser.email, lastModifiedAt: serverTimestamp(),
@@ -935,7 +996,17 @@ window.backupData = async () => {
     showNotification('info','Iniciando backup...',0);
     const colls=['professionals','medications','procedures','patients','appointments','observations'], backup={};
     try {
-        for(const c of colls){ const snap=await getDocs(collection(db,c)); backup[c]=snap.docs.map(d=>({id:d.id,...d.data()})); }
+        for(const c of colls){
+                const snap=await getDocs(collection(db,c));
+                backup[c]=snap.docs.map(d=>{
+                    const data=d.data();
+                    // Converte Timestamps para ISO string para serialização JSON limpa
+                    Object.keys(data).forEach(k=>{
+                        if(data[k]&&typeof data[k].toDate==='function') data[k]=data[k].toDate().toISOString();
+                    });
+                    return {id:d.id,...data};
+                });
+            }
         const blob=new Blob([JSON.stringify(backup,null,2)],{type:'application/json'});
         const url=URL.createObjectURL(blob), a=document.createElement('a');
         a.href=url; a.download=`backup_tricomaster_${new Date().toISOString().split('T')[0]}.json`;
